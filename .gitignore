@@ -1,0 +1,26 @@
+# ============================================
+# .gitignore for vibe-kanban-docker
+# ============================================
+
+# Editor and IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Local configuration (user-specific)
+# The example is tracked, but actual settings are not
+vibe-kanban-docker_settings.yaml
+
+# Temporary files
+*.tmp
+*.log
+
+# Build artifacts (none expected, but just in case)
+target/
+node_modules/
