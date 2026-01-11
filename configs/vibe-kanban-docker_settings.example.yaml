@@ -1,0 +1,43 @@
+# ============================================
+# vibe-kanban-docker Settings
+# ============================================
+# Copy this file to:
+#   ~/.config/vibe-kanban-docker/vibe-kanban-docker_settings.yaml
+#
+# All settings are optional - defaults are used if not specified.
+# ============================================
+
+# ============================================
+# Container Lifecycle Policy
+# ============================================
+# Controls what happens to containers when you're done with them.
+#
+# Values:
+#   "ephemeral" or 0    - Container removed after exit
+#   "persistent" or -1  - Container persists (default)
+#   <seconds>           - TTL, auto-destroy after N seconds (FUTURE)
+#   "24h", "7d", "2w"   - Human-friendly durations (FUTURE)
+#
+# Default: persistent
+container_lifecycle: persistent
+
+# ============================================
+# Future Settings (Not Yet Implemented)
+# ============================================
+# These are documented for future development.
+# Uncommenting them will have no effect currently.
+
+# Default mount mode for paths without --rw flag
+# Values: "ro" (read-only, default) or "rw" (read-write)
+# default_mount_mode: ro
+
+# Logging verbosity
+# Values: "debug", "info", "warn", "error"
+# log_level: info
+
+# Auto-start vibe-kanban when container starts
+# Values: true, false (default)
+# auto_start_vibe_kanban: false
+
+# Custom base port (overrides VIBE_KANBAN_DOCKER_BASE_PORT env var)
+# base_port: 15173

@@ -1,0 +1,29 @@
+# ============================================
+# .dockerignore
+# ============================================
+# Minimize build context for faster builds.
+# Only include files needed for the Docker image.
+#
+# Principle: Exclude everything, explicitly include what's needed.
+# This ensures changes to docs, scripts, etc. don't invalidate cache.
+# ============================================
+
+# Ignore everything by default
+*
+
+# Include only what's needed for the build
+!Dockerfile
+!scripts/
+
+# Exclude from included directories
+scripts/*.md
+scripts/*.txt
+
+# Explicitly exclude (even if parent is included)
+.git
+.gitignore
+*.md
+*.yaml
+*.yml
+docs/
+configs/
