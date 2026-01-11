@@ -1,0 +1,879 @@
+#!/bin/bash
+# ============================================
+# vibe-kanban-docker
+# ============================================
+# Orchestration script for vibe-kanban Docker containers.
+#
+# Usage: vibe-kanban-docker [OPTIONS] <command> [args...]
+#
+# See: vibe-kanban-docker help
+# ============================================
+
+set -euo pipefail
+
+# ============================================
+# Configuration & Defaults
+# ============================================
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONFIG_DIR="${VIBE_KANBAN_CONFIG_DIR:-$HOME/.config/vibe-kanban-docker}"
+
+DOCKER_IMAGE="${VIBE_KANBAN_DOCKER_IMAGE:-vibe-kanban-docker:latest}"
+CONTAINER_PREFIX="${VIBE_KANBAN_DOCKER_CONTAINER_PREFIX:-vkb_}"
+PROVIDERS_VOL="${VIBE_KANBAN_PROVIDERS_VOL:-vibe_kanban_providers}"
+
+# Port allocation: start at 15173 to avoid conflicts with:
+# - Local vibe-kanban dev (3000-3001)
+# - Local vibe-kanban Docker (3000)
+# - Common dev ports (8080, 5173, etc.)
+DEFAULT_BASE_PORT="${VIBE_KANBAN_DOCKER_BASE_PORT:-15173}"
+
+# Providers env directory inside container
+PROVIDERS_ENV_DIR="/home/devuser/.config/providers/env"
+
+# Target directory (default: current working directory)
+target_dir="$PWD"
+
+# ============================================
+# Utility Functions
+# ============================================
+ensure_config_dirs() {
+    mkdir -p "$CONFIG_DIR/containers"
+    mkdir -p "$CONFIG_DIR/container_mappings"
+    mkdir -p "$CONFIG_DIR/port_mappings"
+}
+
+# ============================================
+# Directory Canonicalization (tmuxdir-style)
+# ============================================
+# NOTE: Code using this function should verify the mapping in
+# ~/.config/vibe-kanban-docker/container_mappings/ to ensure the
+# derived container name maps to the expected directory.
+#
+# If a collision is detected (different directory, same canonical name),
+# fallback by appending/incrementing a counter suffix:
+#   - First collision: append "-1" (e.g., vkb_myproject-1)
+#   - Subsequent: increment counter (e.g., vkb_myproject-2, -3, ...)
+#
+# Mapping file format: ~/.config/vibe-kanban-docker/container_mappings/<container_name>
+# Contains the absolute canonical path (via readlink -f) of the directory.
+# ============================================
+generate_container_name() {
+    local raw="$1"
+    raw="${raw%/}"                                          # Strip trailing slashes
+    raw="${raw##*/}"                                        # Keep only final component
+    raw=$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')  # Lowercase
+    raw=$(printf '%s' "$raw" | tr -c '[:alnum:]' '_')       # Non-alnum → _
+    raw=$(printf '%s' "$raw" | sed -E 's/_+/_/g; s/^_+//; s/_+$//')  # Collapse underscores
+    printf '%s%s\n' "$CONTAINER_PREFIX" "$raw"
+}
+
+resolve_container_name() {
+    local dir="$1"
+    local canonical_dir
+    canonical_dir=$(readlink -f "$dir")
+
+    local base_name
+    base_name=$(generate_container_name "$canonical_dir")
+
+    ensure_config_dirs
+
+    local mapping_file="$CONFIG_DIR/container_mappings/$base_name"
+
+    # Check if this name is already mapped
+    if [[ -f "$mapping_file" ]]; then
+        local mapped_dir
+        mapped_dir=$(cat "$mapping_file")
+        if [[ "$mapped_dir" == "$canonical_dir" ]]; then
+            # Same directory, return existing name
+            echo "$base_name"
+            return
+        else
+            # Collision! Find next available suffix
+            local counter=1
+            while [[ -f "$CONFIG_DIR/container_mappings/${base_name}-${counter}" ]]; do
+                local check_dir
+                check_dir=$(cat "$CONFIG_DIR/container_mappings/${base_name}-${counter}")
+                if [[ "$check_dir" == "$canonical_dir" ]]; then
+                    echo "${base_name}-${counter}"
+                    return
+                fi
+                ((counter++))
+            done
+            echo "${base_name}-${counter}"
+            return
+        fi
+    fi
+
+    echo "$base_name"
+}
+
+save_container_mapping() {
+    local container_name="$1"
+    local dir="$2"
+    local canonical_dir
+    canonical_dir=$(readlink -f "$dir")
+
+    ensure_config_dirs
+    echo "$canonical_dir" > "$CONFIG_DIR/container_mappings/$container_name"
+}
+
+# ============================================
+# Container Detection
+# ============================================
+container_exists() {
+    docker ps -a --format '{{.Names}}' | grep -qw "^$1$"
+}
+
+container_running() {
+    docker ps --format '{{.Names}}' | grep -qw "^$1$"
+}
+
+# ============================================
+# Port Allocation
+# ============================================
+port_in_use() {
+    ss -tuln 2>/dev/null | grep -q ":$1 " || \
+    netstat -tuln 2>/dev/null | grep -q ":$1 " || \
+    return 1
+}
+
+port_allocated() {
+    grep -rq "^$1$" "$CONFIG_DIR/port_mappings/" 2>/dev/null
+}
+
+allocate_port() {
+    local container_name="$1"
+    local mapping_file="$CONFIG_DIR/port_mappings/$container_name"
+
+    ensure_config_dirs
+
+    # If already allocated, reuse
+    if [[ -f "$mapping_file" ]]; then
+        cat "$mapping_file"
+        return
+    fi
+
+    # Find next available port
+    local port="$DEFAULT_BASE_PORT"
+    while port_in_use "$port" || port_allocated "$port"; do
+        ((port++))
+    done
+
+    # Save allocation
+    echo "$port" > "$mapping_file"
+    echo "$port"
+}
+
+release_port() {
+    local container_name="$1"
+    rm -f "$CONFIG_DIR/port_mappings/$container_name"
+}
+
+# ============================================
+# Mount Argument Parsing
+# ============================================
+# Parses: [--rw] <path> [--rw] <path> ...
+# Outputs docker -v arguments, one per line
+parse_mounts() {
+    local next_rw=false
+
+    for arg in "$@"; do
+        if [[ "$arg" == "--rw" ]]; then
+            next_rw=true
+            continue
+        fi
+
+        local abs_path
+        abs_path=$(readlink -f "$arg")
+        local mount_opt=":ro"
+        [[ "$next_rw" == true ]] && mount_opt=""
+
+        echo "-v"
+        echo "${abs_path}:${abs_path}${mount_opt}"
+        next_rw=false
+    done
+}
+
+# ============================================
+# Container Metadata
+# ============================================
+save_container_metadata() {
+    local container_name="$1"
+    local dir="$2"
+    local port="$3"
+    shift 3
+    local mounts=("$@")
+
+    local canonical_dir
+    canonical_dir=$(readlink -f "$dir")
+
+    ensure_config_dirs
+
+    local meta_file="$CONFIG_DIR/containers/${container_name}.yaml"
+
+    cat > "$meta_file" << EOF
+container_name: $container_name
+directory: $canonical_dir
+created_at: $(date -Iseconds)
+image: $DOCKER_IMAGE
+port: $port
+mounts:
+EOF
+
+    # Parse mounts array to extract path and mode
+    local next_rw=false
+    for arg in "${mounts[@]}"; do
+        if [[ "$arg" == "--rw" ]]; then
+            next_rw=true
+            continue
+        fi
+
+        local mode="ro"
+        [[ "$next_rw" == true ]] && mode="rw"
+
+        local abs_path
+        abs_path=$(readlink -f "$arg")
+        echo "  - path: $abs_path" >> "$meta_file"
+        echo "    mode: $mode" >> "$meta_file"
+        next_rw=false
+    done
+}
+
+# ============================================
+# Help
+# ============================================
+show_help() {
+    cat << 'EOF'
+vibe-kanban-docker - Sandboxed AI development with vibe-kanban
+
+Usage: vibe-kanban-docker [OPTIONS] <command> [args...]
+
+Commands:
+  build                 Build the Docker image
+  build --no-cache      Build without cache
+  run [paths...]        Start/attach container with optional mounts
+  shell                 Open interactive shell in running container
+  exec <cmd>            Execute command in running container
+  stop                  Stop the container (keeps it)
+  rm                    Remove the container
+  status                Show container status
+  status --all          Show all tracked containers
+  logs                  Show container logs
+  providers login       Run credential setup (claude login, gh auth, etc.)
+  providers status      Show credentials volume contents
+  providers reset       Clear all stored credentials
+  providers env set     Set environment variable
+  providers env import  Import from .env file
+  providers env list    List stored variables
+  providers env show    Show variable value
+  providers env remove  Remove variable
+  help                  Show this help
+
+Options (before paths):
+  --rw                  Next path is read-write (default: read-only)
+  --dir <path>          Use specific directory instead of current
+  --ephemeral           Remove container after exit
+
+Examples:
+  vibe-kanban-docker build
+  vibe-kanban-docker run                          # No mounts
+  vibe-kanban-docker run /path/to/project         # Read-only mount
+  vibe-kanban-docker run --rw /path/to/project    # Read-write mount
+  vibe-kanban-docker run --rw /src /data /config  # src=rw, data=ro, config=ro
+  vibe-kanban-docker shell
+  vibe-kanban-docker providers login
+  vibe-kanban-docker providers env set OPENAI_API_KEY=sk-...
+
+Environment Variables:
+  VIBE_KANBAN_DOCKER_IMAGE          Docker image (default: vibe-kanban-docker:latest)
+  VIBE_KANBAN_DOCKER_CONTAINER_PREFIX  Container prefix (default: vkb_)
+  VIBE_KANBAN_PROVIDERS_VOL         Credentials volume (default: vibe_kanban_providers)
+  VIBE_KANBAN_CONFIG_DIR            Config directory (default: ~/.config/vibe-kanban-docker)
+  VIBE_KANBAN_DOCKER_BASE_PORT      Starting port (default: 15173)
+EOF
+}
+
+# ============================================
+# Commands: Build
+# ============================================
+cmd_build() {
+    local no_cache=false
+
+    for arg in "$@"; do
+        case "$arg" in
+            --no-cache) no_cache=true ;;
+        esac
+    done
+
+    echo "=== Building $DOCKER_IMAGE ==="
+    echo ""
+
+    # Get host user UID/GID for permission compatibility
+    local user_uid
+    local user_gid
+    user_uid=$(id -u)
+    user_gid=$(id -g)
+
+    local cache_flag=""
+    [[ "$no_cache" == true ]] && cache_flag="--no-cache"
+
+    docker build \
+        $cache_flag \
+        --build-arg USER_UID="$user_uid" \
+        --build-arg USER_GID="$user_gid" \
+        -t "$DOCKER_IMAGE" \
+        -f "$SCRIPT_DIR/Dockerfile" \
+        "$SCRIPT_DIR"
+
+    echo ""
+    echo "Build complete: $DOCKER_IMAGE"
+    echo "User mapping: UID=$user_uid, GID=$user_gid"
+}
+
+# ============================================
+# Commands: Run
+# ============================================
+cmd_run() {
+    local container_name
+    container_name=$(resolve_container_name "$target_dir")
+
+    local port
+    port=$(allocate_port "$container_name")
+
+    # Collect mount arguments
+    local mount_args=()
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && mount_args+=("$line")
+    done < <(parse_mounts "$@")
+
+    # Check if container exists
+    if container_exists "$container_name"; then
+        if container_running "$container_name"; then
+            echo "Container '$container_name' already running on port $port"
+            echo "URL: http://localhost:$port"
+            echo ""
+            echo "Use: vibe-kanban-docker shell"
+            return 0
+        else
+            echo "Starting existing container '$container_name'..."
+            docker start "$container_name"
+            echo "Container ready: http://localhost:$port"
+            return 0
+        fi
+    fi
+
+    # Ensure providers volume exists
+    if ! docker volume inspect "$PROVIDERS_VOL" &>/dev/null; then
+        echo "Creating providers volume: $PROVIDERS_VOL"
+        docker volume create "$PROVIDERS_VOL"
+    fi
+
+    # Create new container
+    echo "Creating container '$container_name' on port $port..."
+
+    docker run -d \
+        --name "$container_name" \
+        -e PORT="$port" \
+        -e HOST="0.0.0.0" \
+        -p "${port}:${port}" \
+        -v "${PROVIDERS_VOL}:/home/devuser/.config/providers" \
+        "${mount_args[@]}" \
+        "$DOCKER_IMAGE" \
+        tail -f /dev/null  # Keep container running
+
+    # Save mappings and metadata
+    save_container_mapping "$container_name" "$target_dir"
+    save_container_metadata "$container_name" "$target_dir" "$port" "$@"
+
+    echo ""
+    echo "Container ready: http://localhost:$port"
+    echo ""
+    echo "Next steps:"
+    echo "  vibe-kanban-docker shell              # Open shell"
+    echo "  vibe-kanban-docker exec npx vibe-kanban  # Run vibe-kanban"
+}
+
+# ============================================
+# Commands: Shell & Exec
+# ============================================
+cmd_shell() {
+    local container_name
+    container_name=$(resolve_container_name "$target_dir")
+
+    if ! container_running "$container_name"; then
+        echo "Container '$container_name' is not running."
+        echo "Use: vibe-kanban-docker run"
+        return 1
+    fi
+
+    docker exec -it "$container_name" /bin/bash
+}
+
+cmd_exec() {
+    local container_name
+    container_name=$(resolve_container_name "$target_dir")
+
+    if ! container_running "$container_name"; then
+        echo "Container '$container_name' is not running."
+        return 1
+    fi
+
+    docker exec -it "$container_name" "$@"
+}
+
+# ============================================
+# Commands: Lifecycle
+# ============================================
+cmd_stop() {
+    local container_name
+    container_name=$(resolve_container_name "$target_dir")
+
+    if container_running "$container_name"; then
+        echo "Stopping container '$container_name'..."
+        docker stop "$container_name"
+    else
+        echo "Container '$container_name' is not running."
+    fi
+}
+
+cmd_rm() {
+    local container_name
+    container_name=$(resolve_container_name "$target_dir")
+
+    echo "Removing container '$container_name'..."
+    docker stop "$container_name" 2>/dev/null || true
+    docker rm "$container_name" 2>/dev/null || true
+
+    release_port "$container_name"
+    rm -f "$CONFIG_DIR/container_mappings/$container_name"
+    rm -f "$CONFIG_DIR/containers/${container_name}.yaml"
+
+    echo "Container '$container_name' removed."
+}
+
+cmd_logs() {
+    local container_name
+    container_name=$(resolve_container_name "$target_dir")
+
+    docker logs -f "$container_name"
+}
+
+# ============================================
+# Commands: Status
+# ============================================
+cmd_status() {
+    local container_name
+    container_name=$(resolve_container_name "$target_dir")
+
+    local meta_file="$CONFIG_DIR/containers/${container_name}.yaml"
+
+    echo "=== Container: $container_name ==="
+    echo ""
+
+    # Basic info from metadata
+    if [[ -f "$meta_file" ]]; then
+        echo "Directory:  $(grep '^directory:' "$meta_file" | cut -d' ' -f2-)"
+        echo "Image:      $(grep '^image:' "$meta_file" | cut -d' ' -f2-)"
+        echo "Port:       $(grep '^port:' "$meta_file" | cut -d' ' -f2-)"
+        echo "Created:    $(grep '^created_at:' "$meta_file" | cut -d' ' -f2-)"
+        echo ""
+
+        echo "Mounts:"
+        local in_mounts=false
+        while IFS= read -r line; do
+            if [[ "$line" == "mounts:" ]]; then
+                in_mounts=true
+                continue
+            fi
+            if [[ "$in_mounts" == true ]]; then
+                if [[ "$line" =~ ^[[:space:]]+-[[:space:]]path: ]]; then
+                    local path
+                    path=$(echo "$line" | sed 's/.*path: //')
+                    printf "  %s" "$path"
+                elif [[ "$line" =~ ^[[:space:]]+mode: ]]; then
+                    local mode
+                    mode=$(echo "$line" | sed 's/.*mode: //')
+                    printf " (%s)\n" "$mode"
+                fi
+            fi
+        done < "$meta_file"
+    else
+        echo "No metadata found."
+        echo "Directory: $target_dir"
+    fi
+
+    echo ""
+
+    # Runtime status
+    if container_running "$container_name"; then
+        echo "Status:     RUNNING"
+        local uptime
+        uptime=$(docker ps --filter "name=^${container_name}$" --format "{{.Status}}")
+        echo "Uptime:     $uptime"
+
+        local port_file="$CONFIG_DIR/port_mappings/$container_name"
+        if [[ -f "$port_file" ]]; then
+            local port
+            port=$(cat "$port_file")
+            echo "URL:        http://localhost:$port"
+        fi
+    elif container_exists "$container_name"; then
+        echo "Status:     STOPPED"
+    else
+        echo "Status:     NOT CREATED"
+    fi
+
+    echo ""
+
+    # Image info
+    if docker image inspect "$DOCKER_IMAGE" &>/dev/null; then
+        local image_size
+        image_size=$(docker image inspect "$DOCKER_IMAGE" --format '{{.Size}}' | numfmt --to=iec 2>/dev/null || echo "unknown")
+        echo "Image size: $image_size"
+    else
+        echo "Image:      NOT FOUND (run: vibe-kanban-docker build)"
+    fi
+
+    # Providers volume size
+    if docker volume inspect "$PROVIDERS_VOL" &>/dev/null; then
+        echo "Providers:  $PROVIDERS_VOL (exists)"
+    fi
+}
+
+cmd_status_all() {
+    echo "=== All vibe-kanban-docker Containers ==="
+    echo ""
+    printf "%-25s %-10s %-7s %s\n" "CONTAINER" "STATUS" "PORT" "DIRECTORY"
+    echo "------------------------------------------------------------------------"
+
+    ensure_config_dirs
+
+    for meta_file in "$CONFIG_DIR/containers/"*.yaml; do
+        [[ -f "$meta_file" ]] || continue
+
+        local name dir port status
+        name=$(grep '^container_name:' "$meta_file" | cut -d' ' -f2-)
+        dir=$(grep '^directory:' "$meta_file" | cut -d' ' -f2-)
+        port=$(grep '^port:' "$meta_file" | cut -d' ' -f2-)
+
+        if container_running "$name"; then
+            status="running"
+        elif container_exists "$name"; then
+            status="stopped"
+        else
+            status="removed"
+        fi
+
+        printf "%-25s %-10s %-7s %s\n" "$name" "$status" "$port" "$dir"
+    done
+}
+
+# ============================================
+# Commands: Providers
+# ============================================
+cmd_providers_login() {
+    local container_name
+    container_name=$(resolve_container_name "$target_dir")
+
+    echo "=== Credential Setup ==="
+    echo ""
+
+    # Ensure container exists and is running
+    if ! container_exists "$container_name"; then
+        echo "No container for current directory. Creating one..."
+        cmd_run
+        echo ""
+    elif ! container_running "$container_name"; then
+        echo "Starting container '$container_name'..."
+        docker start "$container_name"
+    fi
+
+    # Exec login commands in the running container
+    docker exec -it "$container_name" /bin/bash -c '
+        echo "=== Claude Code Login ==="
+        echo "Running: claude login"
+        mkdir -p ~/.config/providers/claude
+        claude login || true
+
+        echo ""
+        echo "=== GitHub CLI Login ==="
+        echo "Running: gh auth login"
+        mkdir -p ~/.config/providers/gh
+        gh auth login || true
+
+        echo ""
+        echo "=== Setup Complete ==="
+        echo "Credentials stored in providers volume (shared across all containers)."
+    '
+}
+
+cmd_providers_status() {
+    echo "=== Providers Volume: $PROVIDERS_VOL ==="
+    echo ""
+
+    if ! docker volume inspect "$PROVIDERS_VOL" &>/dev/null; then
+        echo "Volume does not exist yet."
+        echo "Run: vibe-kanban-docker providers login"
+        return 1
+    fi
+
+    # Use lightweight alpine to inspect (no need for full container)
+    docker run --rm \
+        -v "${PROVIDERS_VOL}:/providers:ro" \
+        alpine:latest \
+        sh -c '
+            echo "Stored credentials:"
+            for dir in /providers/*/; do
+                [ -d "$dir" ] || continue
+                name=$(basename "$dir")
+                count=$(find "$dir" -type f 2>/dev/null | wc -l)
+                echo "  $name/ ($count files)"
+            done
+        '
+}
+
+cmd_providers_reset() {
+    echo "WARNING: This will DELETE all stored credentials."
+    echo "Volume: $PROVIDERS_VOL"
+    echo ""
+    read -p "Type 'yes' to confirm: " confirm
+
+    if [[ "$confirm" == "yes" ]]; then
+        # Stop all containers using this volume first
+        echo "Stopping containers using this volume..."
+        ensure_config_dirs
+        for meta_file in "$CONFIG_DIR/containers/"*.yaml; do
+            [[ -f "$meta_file" ]] || continue
+            local name
+            name=$(grep '^container_name:' "$meta_file" | cut -d' ' -f2-)
+            docker stop "$name" 2>/dev/null || true
+        done
+
+        docker volume rm "$PROVIDERS_VOL" 2>/dev/null || true
+        echo "Providers volume removed."
+    else
+        echo "Aborted."
+    fi
+}
+
+# ============================================
+# Commands: Providers Env
+# ============================================
+cmd_providers_env_set() {
+    local input="$1"
+    local var_name var_value
+
+    # Parse VAR=value or VAR (prompts for value)
+    if [[ "$input" == *"="* ]]; then
+        var_name="${input%%=*}"
+        var_value="${input#*=}"
+    else
+        var_name="$input"
+        read -sp "Enter value for $var_name: " var_value
+        echo ""
+    fi
+
+    # Validate var name
+    if [[ ! "$var_name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+        echo "Invalid variable name: $var_name"
+        return 1
+    fi
+
+    # Ensure providers volume exists
+    if ! docker volume inspect "$PROVIDERS_VOL" &>/dev/null; then
+        docker volume create "$PROVIDERS_VOL"
+    fi
+
+    # Store in volume via container
+    docker run --rm \
+        -v "${PROVIDERS_VOL}:/home/devuser/.config/providers" \
+        "$DOCKER_IMAGE" \
+        /bin/bash -c "mkdir -p $PROVIDERS_ENV_DIR && printf '%s' '$var_value' > $PROVIDERS_ENV_DIR/$var_name"
+
+    echo "Set: $var_name"
+}
+
+cmd_providers_env_import() {
+    local file="$1"
+
+    if [[ ! -f "$file" ]]; then
+        echo "File not found: $file"
+        return 1
+    fi
+
+    # Parse .env file (handles: VAR=val, export VAR=val, quotes, comments)
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        # Skip empty lines and comments
+        [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+
+        # Remove 'export ' prefix if present
+        line="${line#export }"
+
+        # Skip if no = sign
+        [[ "$line" != *"="* ]] && continue
+
+        local var_name="${line%%=*}"
+        local var_value="${line#*=}"
+
+        # Remove surrounding quotes (single or double)
+        var_value="${var_value#[\"\']}"
+        var_value="${var_value%[\"\']}"
+
+        # Trim whitespace from var name
+        var_name="${var_name// /}"
+
+        # Skip invalid names
+        [[ ! "$var_name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && continue
+
+        cmd_providers_env_set "${var_name}=${var_value}"
+    done < "$file"
+
+    echo ""
+    echo "Import complete."
+}
+
+cmd_providers_env_list() {
+    echo "=== Stored Environment Variables ==="
+    echo "(values hidden for security)"
+    echo ""
+
+    if ! docker volume inspect "$PROVIDERS_VOL" &>/dev/null; then
+        echo "(none - volume does not exist)"
+        return
+    fi
+
+    docker run --rm \
+        -v "${PROVIDERS_VOL}:/home/devuser/.config/providers:ro" \
+        alpine:latest \
+        sh -c "ls -1 /home/devuser/.config/providers/env/ 2>/dev/null || echo '(none)'"
+}
+
+cmd_providers_env_show() {
+    local var_name="$1"
+
+    if ! docker volume inspect "$PROVIDERS_VOL" &>/dev/null; then
+        echo "(not set - volume does not exist)"
+        return 1
+    fi
+
+    echo "=== $var_name ==="
+    docker run --rm \
+        -v "${PROVIDERS_VOL}:/home/devuser/.config/providers:ro" \
+        alpine:latest \
+        sh -c "cat /home/devuser/.config/providers/env/$var_name 2>/dev/null || echo '(not set)'"
+}
+
+cmd_providers_env_remove() {
+    local var_name="$1"
+
+    docker run --rm \
+        -v "${PROVIDERS_VOL}:/home/devuser/.config/providers" \
+        alpine:latest \
+        sh -c "rm -f /home/devuser/.config/providers/env/$var_name"
+
+    echo "Removed: $var_name"
+}
+
+# ============================================
+# Main Command Router
+# ============================================
+main() {
+    local command="${1:-}"
+    shift || true
+
+    # Global options parsing (before command)
+    while [[ "${command:-}" == --* ]]; do
+        case "$command" in
+            --dir)
+                target_dir="$(readlink -f "$1")"
+                shift
+                command="${1:-}"
+                shift || true
+                ;;
+            --help|-h)
+                show_help
+                return 0
+                ;;
+            *)
+                echo "Unknown option: $command"
+                show_help
+                return 1
+                ;;
+        esac
+    done
+
+    case "$command" in
+        build)
+            cmd_build "$@"
+            ;;
+        run)
+            cmd_run "$@"
+            ;;
+        shell|sh)
+            cmd_shell "$@"
+            ;;
+        exec)
+            cmd_exec "$@"
+            ;;
+        stop)
+            cmd_stop "$@"
+            ;;
+        rm|remove)
+            cmd_rm "$@"
+            ;;
+        status)
+            if [[ "${1:-}" == "--all" || "${1:-}" == "-a" ]]; then
+                cmd_status_all
+            else
+                cmd_status "$@"
+            fi
+            ;;
+        logs)
+            cmd_logs "$@"
+            ;;
+        providers)
+            local subcmd="${1:-}"
+            shift || true
+            case "$subcmd" in
+                login)
+                    cmd_providers_login
+                    ;;
+                status)
+                    cmd_providers_status
+                    ;;
+                reset)
+                    cmd_providers_reset
+                    ;;
+                env)
+                    local envcmd="${1:-}"
+                    shift || true
+                    case "$envcmd" in
+                        set)    cmd_providers_env_set "$@" ;;
+                        import) cmd_providers_env_import "$@" ;;
+                        list)   cmd_providers_env_list ;;
+                        show)   cmd_providers_env_show "$@" ;;
+                        remove) cmd_providers_env_remove "$@" ;;
+                        *)      echo "Usage: providers env {set|import|list|show|remove}" ;;
+                    esac
+                    ;;
+                *)
+                    echo "Usage: providers {login|status|reset|env}"
+                    ;;
+            esac
+            ;;
+        help|--help|-h)
+            show_help
+            ;;
+        "")
+            show_help
+            ;;
+        *)
+            echo "Unknown command: $command"
+            echo ""
+            show_help
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"
