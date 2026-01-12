@@ -406,7 +406,11 @@ cmd_shell() {
         return 1
     fi
 
-    docker exec -it "$container_name" /bin/bash
+    # Use -it only if we have a TTY
+    local tty_flags=""
+    [[ -t 0 ]] && tty_flags="-it"
+
+    docker exec $tty_flags "$container_name" /bin/bash
 }
 
 cmd_exec() {
@@ -418,7 +422,11 @@ cmd_exec() {
         return 1
     fi
 
-    docker exec -it "$container_name" "$@"
+    # Use -it only if we have a TTY
+    local tty_flags=""
+    [[ -t 0 ]] && tty_flags="-it"
+
+    docker exec $tty_flags "$container_name" "$@"
 }
 
 # ============================================
