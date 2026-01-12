@@ -20,6 +20,7 @@ CONFIG_DIR="${VIBE_KANBAN_CONFIG_DIR:-$HOME/.config/vibe-kanban-docker}"
 DOCKER_IMAGE="${VIBE_KANBAN_DOCKER_IMAGE:-vibe-kanban-docker:latest}"
 CONTAINER_PREFIX="${VIBE_KANBAN_DOCKER_CONTAINER_PREFIX:-vkb_}"
 PROVIDERS_VOL="${VIBE_KANBAN_PROVIDERS_VOL:-vibe_kanban_providers}"
+DOTCLAUDE_VOL="${VIBE_KANBAN_DOTCLAUDE_VOL:-vibe_kanban_dotclaude}"
 
 # Port allocation: start at 15173 to avoid conflicts with:
 # - Local vibe-kanban dev (3000-3001)
@@ -267,6 +268,8 @@ Commands:
   providers env list    List stored variables
   providers env show    Show variable value
   providers env remove  Remove variable
+  volume <name> status  Show volume info (providers, dotclaude)
+  volume <name> rm      Remove volume (auto-recreated when needed)
   help                  Show this help
 
 Options (before paths):
@@ -288,6 +291,7 @@ Environment Variables:
   VIBE_KANBAN_DOCKER_IMAGE          Docker image (default: vibe-kanban-docker:latest)
   VIBE_KANBAN_DOCKER_CONTAINER_PREFIX  Container prefix (default: vkb_)
   VIBE_KANBAN_PROVIDERS_VOL         Credentials volume (default: vibe_kanban_providers)
+  VIBE_KANBAN_DOTCLAUDE_VOL         Claude config volume (default: vibe_kanban_dotclaude)
   VIBE_KANBAN_CONFIG_DIR            Config directory (default: ~/.config/vibe-kanban-docker)
   VIBE_KANBAN_DOCKER_BASE_PORT      Starting port (default: 15173)
 EOF
@@ -783,6 +787,114 @@ cmd_providers_env_remove() {
 }
 
 # ============================================
+# Commands: Volume Management
+# ============================================
+# Get volume name by alias
+get_volume_name() {
+    local alias="$1"
+    case "$alias" in
+        providers)  echo "$PROVIDERS_VOL" ;;
+        dotclaude)  echo "$DOTCLAUDE_VOL" ;;
+        *)
+            echo "Unknown volume: $alias" >&2
+            echo "Available volumes: providers, dotclaude" >&2
+            return 1
+            ;;
+    esac
+}
+
+cmd_volume_status() {
+    local alias="$1"
+    local vol_name
+    vol_name=$(get_volume_name "$alias") || return 1
+
+    echo "=== Volume: $vol_name ($alias) ==="
+    echo ""
+
+    if ! docker volume inspect "$vol_name" &>/dev/null; then
+        echo "Status:     NOT CREATED"
+        echo ""
+        echo "Volume will be auto-created when needed (e.g., on 'run' or 'providers login')."
+        return 0
+    fi
+
+    echo "Status:     EXISTS"
+
+    # Get volume details
+    local mountpoint
+    mountpoint=$(docker volume inspect "$vol_name" --format '{{.Mountpoint}}' 2>/dev/null || echo "unknown")
+    echo "Mountpoint: $mountpoint"
+
+    # Get volume size using docker system df
+    local vol_size
+    vol_size=$(docker system df -v 2>/dev/null | grep "$vol_name" | awk '{print $3}' || echo "unknown")
+    echo "Size:       $vol_size"
+
+    # Show contents summary
+    echo ""
+    echo "Contents:"
+    docker run --rm \
+        -v "${vol_name}:/vol:ro" \
+        alpine:latest \
+        sh -c '
+            if [ -z "$(ls -A /vol 2>/dev/null)" ]; then
+                echo "  (empty)"
+            else
+                find /vol -type f 2>/dev/null | head -20 | while read f; do
+                    size=$(stat -c%s "$f" 2>/dev/null || echo "?")
+                    echo "  ${f#/vol/} ($size bytes)"
+                done
+                count=$(find /vol -type f 2>/dev/null | wc -l)
+                if [ "$count" -gt 20 ]; then
+                    echo "  ... and $((count - 20)) more files"
+                fi
+            fi
+        '
+}
+
+cmd_volume_rm() {
+    local alias="$1"
+    local vol_name
+    vol_name=$(get_volume_name "$alias") || return 1
+
+    if ! docker volume inspect "$vol_name" &>/dev/null; then
+        echo "Volume '$vol_name' does not exist."
+        return 0
+    fi
+
+    echo "WARNING: This will DELETE volume: $vol_name"
+    echo ""
+
+    # Check if any containers are using this volume
+    local using_containers
+    using_containers=$(docker ps -a --filter "volume=$vol_name" --format '{{.Names}}' 2>/dev/null || true)
+
+    if [[ -n "$using_containers" ]]; then
+        echo "Containers using this volume:"
+        echo "$using_containers" | sed 's/^/  /'
+        echo ""
+        echo "These containers will be stopped before removing the volume."
+    fi
+
+    read -p "Type 'yes' to confirm: " confirm
+
+    if [[ "$confirm" == "yes" ]]; then
+        # Stop containers using this volume
+        if [[ -n "$using_containers" ]]; then
+            echo "Stopping containers..."
+            echo "$using_containers" | xargs -r docker stop 2>/dev/null || true
+        fi
+
+        docker volume rm "$vol_name"
+        echo "Volume '$vol_name' removed."
+        echo ""
+        echo "Note: Volume will be auto-created when needed."
+    else
+        echo "Aborted."
+    fi
+}
+
+# ============================================
 # Main Command Router
 # ============================================
 main() {
@@ -867,6 +979,20 @@ main() {
                 *)
                     echo "Usage: providers {login|status|reset|env}"
                     ;;
+            esac
+            ;;
+        volume|vol)
+            local vol_alias="${1:-}"
+            local vol_cmd="${2:-}"
+            if [[ -z "$vol_alias" || -z "$vol_cmd" ]]; then
+                echo "Usage: volume <name> {status|rm}"
+                echo "Available volumes: providers, dotclaude"
+                exit 1
+            fi
+            case "$vol_cmd" in
+                status) cmd_volume_status "$vol_alias" ;;
+                rm)     cmd_volume_rm "$vol_alias" ;;
+                *)      echo "Usage: volume <name> {status|rm}" ;;
             esac
             ;;
         help|--help|-h)

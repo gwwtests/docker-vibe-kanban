@@ -118,6 +118,17 @@ vibe-kanban-docker status
 | `~/.config/vibe-kanban-docker/port_mappings/` | Port allocations |
 | `~/.config/providers/` (in container) | Mounted credentials volume |
 
+## Volume Management
+
+```bash
+vibe-kanban-docker volume providers status   # Show providers volume info
+vibe-kanban-docker volume providers rm       # Remove providers volume
+vibe-kanban-docker volume dotclaude status   # Show dotclaude volume info
+vibe-kanban-docker volume dotclaude rm       # Remove dotclaude volume
+```
+
+Note: Volumes are auto-created when needed (e.g., on `run` or `providers login`).
+
 ## Mount Modes
 
 | Command | Result |
