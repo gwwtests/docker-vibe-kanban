@@ -260,7 +260,7 @@ Commands:
   status                Show container status
   status --all          Show all tracked containers
   logs                  Show container logs
-  providers login       Run credential setup (claude login, gh auth, etc.)
+  providers login [name] Run credential setup (claude, gh, all)
   providers status      Show credentials volume contents
   providers reset       Clear all stored credentials
   providers env set     Set environment variable
@@ -584,9 +584,59 @@ cmd_status_all() {
 # Commands: Providers
 # ============================================
 cmd_providers_login() {
+    local provider="${1:-}"
+
+    # Available providers: name -> "Description|login_command"
+    local -a provider_names=("claude" "gh")
+    local -A provider_info=(
+        ["claude"]="Claude Code|mkdir -p ~/.config/providers/claude && claude login"
+        ["gh"]="GitHub CLI|mkdir -p ~/.config/providers/gh && gh auth login"
+    )
+
+    # If no provider specified, show selection menu
+    if [[ -z "$provider" ]]; then
+        echo "Available providers:"
+        echo ""
+        local i=1
+        for p in "${provider_names[@]}"; do
+            local desc="${provider_info[$p]%%|*}"
+            echo "  $i) $p - $desc"
+            ((i++))
+        done
+        echo "  $i) all - Login to all providers"
+        echo ""
+        read -p "Select provider (1-$i or name): " selection
+
+        # Handle selection
+        if [[ "$selection" =~ ^[0-9]+$ ]]; then
+            if [[ "$selection" -ge 1 && "$selection" -le ${#provider_names[@]} ]]; then
+                provider="${provider_names[$((selection-1))]}"
+            elif [[ "$selection" -eq $i ]]; then
+                provider="all"
+            else
+                echo "Invalid selection"
+                return 1
+            fi
+        else
+            provider="$selection"
+        fi
+    fi
+
+    # Validate provider name
+    if [[ -z "$provider" ]]; then
+        echo "No provider selected"
+        return 1
+    fi
+    if [[ "$provider" != "all" && -z "${provider_info[$provider]:-}" ]]; then
+        echo "Unknown provider: $provider"
+        echo "Available: ${provider_names[*]} all"
+        return 1
+    fi
+
     local container_name
     container_name=$(resolve_container_name "$target_dir")
 
+    echo ""
     echo "=== Credential Setup ==="
     echo ""
 
@@ -600,23 +650,25 @@ cmd_providers_login() {
         docker start "$container_name"
     fi
 
+    # Build login commands based on selection
+    local login_script=""
+
+    if [[ "$provider" == "all" ]]; then
+        for p in "${provider_names[@]}"; do
+            local desc="${provider_info[$p]%%|*}"
+            local cmd="${provider_info[$p]#*|}"
+            login_script+="echo '=== $desc Login ===' && $cmd || true; echo ''; "
+        done
+    else
+        local desc="${provider_info[$provider]%%|*}"
+        local cmd="${provider_info[$provider]#*|}"
+        login_script="echo '=== $desc Login ===' && $cmd || true; echo ''; "
+    fi
+
+    login_script+="echo '=== Setup Complete ==='; echo 'Credentials stored in providers volume (shared across all containers).'"
+
     # Exec login commands in the running container
-    docker exec -it "$container_name" /bin/bash -c '
-        echo "=== Claude Code Login ==="
-        echo "Running: claude login"
-        mkdir -p ~/.config/providers/claude
-        claude login || true
-
-        echo ""
-        echo "=== GitHub CLI Login ==="
-        echo "Running: gh auth login"
-        mkdir -p ~/.config/providers/gh
-        gh auth login || true
-
-        echo ""
-        echo "=== Setup Complete ==="
-        echo "Credentials stored in providers volume (shared across all containers)."
-    '
+    docker exec -it "$container_name" /bin/bash -c "$login_script"
 }
 
 cmd_providers_status() {
@@ -956,7 +1008,7 @@ main() {
             shift || true
             case "$subcmd" in
                 login)
-                    cmd_providers_login
+                    cmd_providers_login "$@"
                     ;;
                 status)
                     cmd_providers_status
