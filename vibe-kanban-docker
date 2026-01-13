@@ -344,24 +344,46 @@ cmd_run() {
     local port
     port=$(allocate_port "$container_name")
 
-    # Collect mount arguments
+    # Collect mount arguments and determine workspace
     local mount_args=()
     while IFS= read -r line; do
         [[ -n "$line" ]] && mount_args+=("$line")
     done < <(parse_mounts "$@")
 
+    # Determine WORKSPACE_DIR: first --rw path, or first path, or target_dir
+    local workspace_dir=""
+    local first_path=""
+    local next_rw=false
+    for arg in "$@"; do
+        if [[ "$arg" == "--rw" ]]; then
+            next_rw=true
+            continue
+        fi
+        local abs_path
+        abs_path=$(readlink -f "$arg" 2>/dev/null) || continue
+        [[ -d "$abs_path" ]] || continue
+        [[ -z "$first_path" ]] && first_path="$abs_path"
+        if [[ "$next_rw" == true && -z "$workspace_dir" ]]; then
+            workspace_dir="$abs_path"
+        fi
+        next_rw=false
+    done
+    # Fallback: first path, then target_dir
+    workspace_dir="${workspace_dir:-$first_path}"
+    workspace_dir="${workspace_dir:-$target_dir}"
+
     # Check if container exists
     if container_exists "$container_name"; then
         if container_running "$container_name"; then
             echo "Container '$container_name' already running on port $port"
-            echo "URL: http://localhost:$port"
+            echo "URL: http://127.0.0.1:$port"
             echo ""
             echo "Use: vibe-kanban-docker shell"
             return 0
         else
             echo "Starting existing container '$container_name'..."
             docker start "$container_name"
-            echo "Container ready: http://localhost:$port"
+            echo "Container ready: http://127.0.0.1:$port"
             return 0
         fi
     fi
@@ -374,27 +396,34 @@ cmd_run() {
 
     # Create new container
     echo "Creating container '$container_name' on port $port..."
+    echo "Workspace: $workspace_dir"
 
     docker run -d \
         --name "$container_name" \
+        --restart unless-stopped \
         -e PORT="$port" \
         -e HOST="0.0.0.0" \
+        -e WORKSPACE_DIR="$workspace_dir" \
         -p "${port}:${port}" \
         -v "${PROVIDERS_VOL}:/home/devuser/.config/providers" \
         "${mount_args[@]}" \
         "$DOCKER_IMAGE" \
-        tail -f /dev/null  # Keep container running
+        start  # Auto-start vibe-kanban
 
     # Save mappings and metadata
     save_container_mapping "$container_name" "$target_dir"
     save_container_metadata "$container_name" "$target_dir" "$port" "$@"
 
+    # Wait briefly for vibe-kanban to start
+    sleep 2
+
     echo ""
-    echo "Container ready: http://localhost:$port"
+    echo "Container started: http://127.0.0.1:$port"
     echo ""
-    echo "Next steps:"
-    echo "  vibe-kanban-docker shell              # Open shell"
-    echo "  vibe-kanban-docker exec npx vibe-kanban  # Run vibe-kanban"
+    echo "Commands:"
+    echo "  vibe-kanban-docker logs    # View vibe-kanban output"
+    echo "  vibe-kanban-docker shell   # Open shell"
+    echo "  vibe-kanban-docker stop    # Stop container"
 }
 
 # ============================================
@@ -527,7 +556,7 @@ cmd_status() {
         if [[ -f "$port_file" ]]; then
             local port
             port=$(cat "$port_file")
-            echo "URL:        http://localhost:$port"
+            echo "URL:        http://127.0.0.1:$port"
         fi
     elif container_exists "$container_name"; then
         echo "Status:     STOPPED"

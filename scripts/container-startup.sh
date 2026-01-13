@@ -80,7 +80,33 @@ load_provider_envs
 setup_credential_symlinks
 
 # ============================================
-# Execute the passed command
+# Auto-start vibe-kanban if WORKSPACE_DIR is set
 # ============================================
-# e.g., /bin/bash or npx vibe-kanban
-exec "$@"
+# WORKSPACE_DIR is set by vibe-kanban-docker run command
+# If set, we start vibe-kanban in that directory
+start_vibe_kanban() {
+    if [[ -n "${WORKSPACE_DIR:-}" && -d "$WORKSPACE_DIR" ]]; then
+        echo "=== vibe-kanban-docker ==="
+        echo "Workspace: $WORKSPACE_DIR"
+        echo "Port:      $PORT"
+        echo "URL:       http://127.0.0.1:$PORT"
+        echo ""
+        cd "$WORKSPACE_DIR"
+        exec npx vibe-kanban
+    else
+        echo "No WORKSPACE_DIR set or directory doesn't exist."
+        echo "Starting idle shell. Run 'npx vibe-kanban' manually."
+        exec tail -f /dev/null
+    fi
+}
+
+# ============================================
+# Execute: vibe-kanban or passed command
+# ============================================
+# If no arguments or default "start" arg, run vibe-kanban
+# Otherwise, run the passed command (for shell/exec access)
+if [[ $# -eq 0 || "$1" == "start" ]]; then
+    start_vibe_kanban
+else
+    exec "$@"
+fi

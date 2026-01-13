@@ -22,14 +22,14 @@ vibe-kanban runs AI agents with powerful permissions (`--dangerously-skip-permis
 # 2. Setup credentials (once)
 ./vibe-kanban-docker providers login
 
-# 3. Run with your project
-cd /path/to/your/project
-./vibe-kanban-docker run --rw .
+# 3. Run with your project (vibe-kanban starts automatically)
+./vibe-kanban-docker run --rw /path/to/your/project
 
-# 4. Open shell and start vibe-kanban
-./vibe-kanban-docker shell
-npx vibe-kanban
+# 4. Open in browser
+# http://127.0.0.1:15173
 ```
+
+Containers auto-start vibe-kanban and persist across reboots (`--restart unless-stopped`).
 
 ## Installation
 
@@ -75,11 +75,25 @@ This builds an Arch Linux container with:
 ### Container Interaction
 
 ```bash
+./vibe-kanban-docker logs        # View vibe-kanban output
 ./vibe-kanban-docker shell       # Interactive bash
 ./vibe-kanban-docker exec cmd    # Run single command
-./vibe-kanban-docker logs        # View container logs
 ./vibe-kanban-docker stop        # Stop container
 ./vibe-kanban-docker rm          # Remove container
+```
+
+### Container Targeting
+
+Commands operate on the container for the **current directory** by default:
+
+```bash
+# From project directory
+cd /path/to/project
+./vibe-kanban-docker logs
+
+# Or use --dir to target any container
+./vibe-kanban-docker --dir /path/to/project logs
+./vibe-kanban-docker --dir /other/project shell
 ```
 
 ### Status

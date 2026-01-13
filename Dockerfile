@@ -136,7 +136,11 @@ RUN pacman -S --needed --noconfirm \
     openssh \
     ca-certificates \
     less \
-    tree
+    tree \
+    procps-ng \
+    iproute2 \
+    net-tools \
+    bind
 
 # ============================================
 # Layer 6: Node.js & pnpm (stable)

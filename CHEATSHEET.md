@@ -45,6 +45,19 @@ vibe-kanban-docker status         # This directory's container
 vibe-kanban-docker status --all   # All tracked containers
 ```
 
+## Container Targeting
+
+```bash
+# Default: operates on container for current directory
+cd /path/to/project
+vibe-kanban-docker logs
+
+# Explicit: use --dir to target any container
+vibe-kanban-docker --dir /path/to/project logs
+vibe-kanban-docker --dir /other/project shell
+vibe-kanban-docker --dir /project status
+```
+
 ## Credentials (Shared Across All Containers)
 
 ```bash
