@@ -502,7 +502,37 @@ cmd_logs() {
 # ============================================
 # Commands: Status
 # ============================================
+cmd_status_help() {
+    cat <<'EOF'
+Usage: vibe-kanban-docker status [OPTIONS]
+
+Show container status for current directory (or all containers).
+
+Options:
+  --all, -a       Show all tracked containers
+  --verbose, -v   Show configuration details (env vars, defaults)
+  --help, -h      Show this help message
+
+Examples:
+  vibe-kanban-docker status              # Current directory's container
+  vibe-kanban-docker status --all        # All tracked containers
+  vibe-kanban-docker status -v           # Verbose with config details
+  vibe-kanban-docker --dir /path status  # Specific directory's container
+EOF
+}
+
 cmd_status() {
+    local verbose=false
+
+    # Parse options
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --verbose|-v) verbose=true; shift ;;
+            --help|-h) cmd_status_help; return 0 ;;
+            *) shift ;;
+        esac
+    done
+
     local container_name
     container_name=$(resolve_container_name "$target_dir")
 
@@ -521,6 +551,7 @@ cmd_status() {
 
         echo "Mounts:"
         local in_mounts=false
+        local has_mounts=false
         while IFS= read -r line; do
             if [[ "$line" == "mounts:" ]]; then
                 in_mounts=true
@@ -531,6 +562,7 @@ cmd_status() {
                     local path
                     path=$(echo "$line" | sed 's/.*path: //')
                     printf "  %s" "$path"
+                    has_mounts=true
                 elif [[ "$line" =~ ^[[:space:]]+mode: ]]; then
                     local mode
                     mode=$(echo "$line" | sed 's/.*mode: //')
@@ -538,6 +570,7 @@ cmd_status() {
                 fi
             fi
         done < "$meta_file"
+        [[ "$has_mounts" == false ]] && echo "  (none)"
     else
         echo "No metadata found."
         echo "Directory: $target_dir"
@@ -566,47 +599,151 @@ cmd_status() {
 
     echo ""
 
+    # Docker Resources section
+    echo "--- Docker Resources ---"
+    echo ""
+
     # Image info
+    echo "Image:"
     if docker image inspect "$DOCKER_IMAGE" &>/dev/null; then
-        local image_size
+        local image_size image_id
         image_size=$(docker image inspect "$DOCKER_IMAGE" --format '{{.Size}}' | numfmt --to=iec 2>/dev/null || echo "unknown")
-        echo "Image size: $image_size"
+        image_id=$(docker image inspect "$DOCKER_IMAGE" --format '{{.Id}}' | cut -c8-19)
+        echo "  Name:     $DOCKER_IMAGE"
+        echo "  Size:     $image_size"
+        echo "  ID:       $image_id"
     else
-        echo "Image:      NOT FOUND (run: vibe-kanban-docker build)"
+        echo "  NOT FOUND (run: vibe-kanban-docker build)"
     fi
 
-    # Providers volume size
+    echo ""
+    echo "Volumes:"
+
+    # Providers volume
     if docker volume inspect "$PROVIDERS_VOL" &>/dev/null; then
-        echo "Providers:  $PROVIDERS_VOL (exists)"
+        local vol_created
+        vol_created=$(docker volume inspect "$PROVIDERS_VOL" --format '{{.CreatedAt}}' 2>/dev/null | cut -dT -f1)
+        echo "  providers:  $PROVIDERS_VOL (created: $vol_created)"
+    else
+        echo "  providers:  $PROVIDERS_VOL (not created)"
+    fi
+
+    # Dotclaude volume
+    local dotclaude_vol="vibe_kanban_dotclaude"
+    if docker volume inspect "$dotclaude_vol" &>/dev/null; then
+        local vol_created
+        vol_created=$(docker volume inspect "$dotclaude_vol" --format '{{.CreatedAt}}' 2>/dev/null | cut -dT -f1)
+        echo "  dotclaude:  $dotclaude_vol (created: $vol_created)"
+    else
+        echo "  dotclaude:  $dotclaude_vol (not created)"
+    fi
+
+    # Verbose mode: show configuration
+    if [[ "$verbose" == true ]]; then
+        echo ""
+        echo "--- Configuration (--verbose) ---"
+        echo ""
+        echo "Environment Variables:"
+        printf "  %-35s = %s\n" "VIBE_KANBAN_DOCKER_IMAGE" "${VIBE_KANBAN_DOCKER_IMAGE:-<unset, default: vibe-kanban-docker:latest>}"
+        printf "  %-35s = %s\n" "VIBE_KANBAN_DOCKER_CONTAINER_PREFIX" "${VIBE_KANBAN_DOCKER_CONTAINER_PREFIX:-<unset, default: vkb_>}"
+        printf "  %-35s = %s\n" "VIBE_KANBAN_PROVIDERS_VOL" "${VIBE_KANBAN_PROVIDERS_VOL:-<unset, default: vibe_kanban_providers>}"
+        printf "  %-35s = %s\n" "VIBE_KANBAN_CONFIG_DIR" "${VIBE_KANBAN_CONFIG_DIR:-<unset, default: ~/.config/vibe-kanban-docker>}"
+        printf "  %-35s = %s\n" "VIBE_KANBAN_DOCKER_BASE_PORT" "${VIBE_KANBAN_DOCKER_BASE_PORT:-<unset, default: 15173>}"
+        echo ""
+        echo "Effective Values:"
+        echo "  Image:           $DOCKER_IMAGE"
+        echo "  Prefix:          $CONTAINER_PREFIX"
+        echo "  Providers Vol:   $PROVIDERS_VOL"
+        echo "  Config Dir:      $CONFIG_DIR"
+        echo "  Base Port:       $DEFAULT_BASE_PORT"
+        echo "  Target Dir:      $target_dir"
+        echo ""
+        echo "Config Files:"
+        echo "  Metadata:        $meta_file"
+        echo "  Port Mapping:    $CONFIG_DIR/port_mappings/$container_name"
     fi
 }
 
 cmd_status_all() {
+    local verbose=false
+
+    # Parse options
+    for arg in "$@"; do
+        case "$arg" in
+            --verbose|-v) verbose=true ;;
+        esac
+    done
+
     echo "=== All vibe-kanban-docker Containers ==="
     echo ""
-    printf "%-25s %-10s %-7s %s\n" "CONTAINER" "STATUS" "PORT" "DIRECTORY"
-    echo "------------------------------------------------------------------------"
 
     ensure_config_dirs
+
+    local count=0
+    local running=0
+    local stopped=0
+
+    printf "%-25s %-10s %-7s %-35s %s\n" "CONTAINER" "STATUS" "PORT" "URL" "DIRECTORY"
+    echo "--------------------------------------------------------------------------------------------------------------"
 
     for meta_file in "$CONFIG_DIR/containers/"*.yaml; do
         [[ -f "$meta_file" ]] || continue
 
-        local name dir port status
+        local name dir port status url
         name=$(grep '^container_name:' "$meta_file" | cut -d' ' -f2-)
         dir=$(grep '^directory:' "$meta_file" | cut -d' ' -f2-)
         port=$(grep '^port:' "$meta_file" | cut -d' ' -f2-)
+        url="-"
 
         if container_running "$name"; then
             status="running"
+            url="http://127.0.0.1:$port"
+            running=$((running + 1))
         elif container_exists "$name"; then
             status="stopped"
+            stopped=$((stopped + 1))
         else
             status="removed"
         fi
 
-        printf "%-25s %-10s %-7s %s\n" "$name" "$status" "$port" "$dir"
+        count=$((count + 1))
+        printf "%-25s %-10s %-7s %-35s %s\n" "$name" "$status" "$port" "$url" "$dir"
     done
+
+    if [[ $count -eq 0 ]]; then
+        echo "(no containers tracked)"
+    fi
+
+    echo ""
+    echo "Total: $count containers ($running running, $stopped stopped)"
+
+    # Verbose: show shared resources
+    if [[ "$verbose" == true ]]; then
+        echo ""
+        echo "--- Shared Docker Resources ---"
+        echo ""
+        echo "Volumes:"
+        if docker volume inspect "$PROVIDERS_VOL" &>/dev/null; then
+            echo "  providers:  $PROVIDERS_VOL (exists)"
+        else
+            echo "  providers:  $PROVIDERS_VOL (not created)"
+        fi
+        local dotclaude_vol="vibe_kanban_dotclaude"
+        if docker volume inspect "$dotclaude_vol" &>/dev/null; then
+            echo "  dotclaude:  $dotclaude_vol (exists)"
+        else
+            echo "  dotclaude:  $dotclaude_vol (not created)"
+        fi
+        echo ""
+        echo "Image:"
+        if docker image inspect "$DOCKER_IMAGE" &>/dev/null; then
+            local image_size
+            image_size=$(docker image inspect "$DOCKER_IMAGE" --format '{{.Size}}' | numfmt --to=iec 2>/dev/null || echo "unknown")
+            echo "  $DOCKER_IMAGE ($image_size)"
+        else
+            echo "  $DOCKER_IMAGE (not built)"
+        fi
+    fi
 }
 
 # ============================================
@@ -1023,8 +1160,11 @@ main() {
             cmd_rm "$@"
             ;;
         status)
-            if [[ "${1:-}" == "--all" || "${1:-}" == "-a" ]]; then
-                cmd_status_all
+            if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+                cmd_status_help
+            elif [[ "${1:-}" == "--all" || "${1:-}" == "-a" ]]; then
+                shift
+                cmd_status_all "$@"
             else
                 cmd_status "$@"
             fi
