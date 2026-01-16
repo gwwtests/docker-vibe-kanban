@@ -95,13 +95,26 @@ Build the Docker image:
 ./vibe-kanban-docker build
 ```
 
-This builds an Arch Linux container with:
+This builds an Arch Linux container with all tools pre-installed. See [Container Contents](#container-contents) for details.
 
-* Node.js 18+, pnpm
-* Rust (latest stable), cargo-watch, sqlx-cli
-* Claude Code, GitHub CLI
-* vim, neovim, tig, tmux, ripgrep, fd, bat, fzf
-* AUR support via yay
+## Container Contents
+
+**Base: Arch Linux** (not Alpine) — full glibc compatibility, AUR access via yay
+
+| Category | Tools |
+|----------|-------|
+| **Editors** | vim, neovim |
+| **Languages** | Node.js 18+, pnpm, Rust (stable), Python 3 |
+| **AI Tools** | Claude Code, GitHub CLI |
+| **Rust Dev** | cargo-watch, sqlx-cli, clippy, rustfmt |
+| **Terminal** | tmux, screen, htop, mc, less, tree |
+| **Search/Find** | ripgrep (rg), fd, fzf, bat |
+| **Git** | git, tig |
+| **Network** | curl, wget, aria2, openssh |
+| **Diagnostics** | procps-ng (ps, top), iproute2 (ip, ss), net-tools (netstat), bind (dig) |
+| **Data** | jq |
+
+All tools available to AI agents running inside the container
 
 ## Usage
 
