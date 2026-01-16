@@ -17,6 +17,15 @@ Thumbs.db
 # The example is tracked, but actual settings are not
 vibe-kanban-docker_settings.yaml
 
+# Claude Code local settings (user-specific paths)
+.claude/settings.local.json
+
+# Temporary/development files
+tmp/
+
+# Privacy audit reports (may contain PII findings)
+privacy-audit-*.md
+
 # Temporary files
 *.tmp
 *.log

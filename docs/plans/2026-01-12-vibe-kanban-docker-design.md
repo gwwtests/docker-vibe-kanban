@@ -276,7 +276,7 @@ Examples:
 
 ## Inspiration Sources
 
-* `Local Docker isolated setup patterns` - User mapping, volume patterns
-* `Local Arch Linux + yay/AUR Docker setup` - Arch Linux + yay/AUR setup
-* `[tmuxdir](https://github.com/shibuido/tmuxdir)` - Directory canonicalization pattern
-* `https://github.com/BloopAI/vibe-kanban` - Upstream project
+* Local Docker isolated setup patterns - User mapping, volume patterns
+* Local Arch Linux + yay/AUR Docker setup - Arch Linux + yay/AUR setup
+* [tmuxdir](https://github.com/shibuido/tmuxdir) - Directory canonicalization pattern
+* [vibe-kanban](https://github.com/BloopAI/vibe-kanban) - Upstream project
