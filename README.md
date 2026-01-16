@@ -65,8 +65,11 @@ vibe-kanban runs AI agents with powerful permissions (`--dangerously-skip-permis
 # 1. Build the image
 ./vibe-kanban-docker build
 
-# 2. Setup credentials (once)
-./vibe-kanban-docker providers login
+# 2. Setup credentials (once) - interactive menu or specify provider
+./vibe-kanban-docker providers login           # Interactive: select from menu
+./vibe-kanban-docker providers login claude    # Claude Code only
+./vibe-kanban-docker providers login gh        # GitHub CLI only
+./vibe-kanban-docker providers login all       # All providers
 
 # 3. Run with your project (vibe-kanban starts automatically)
 ./vibe-kanban-docker run --rw /path/to/your/project
@@ -154,8 +157,13 @@ cd /path/to/project
 **All containers share a single providers volume.** Login once, and all containers have access.
 
 ```bash
-# Interactive login for Claude and GitHub
+# Interactive login - select provider from menu
 ./vibe-kanban-docker providers login
+
+# Or specify provider directly
+./vibe-kanban-docker providers login claude    # Claude Code (runs: claude login)
+./vibe-kanban-docker providers login gh        # GitHub CLI (runs: gh auth login)
+./vibe-kanban-docker providers login all       # All providers
 
 # Check stored credentials
 ./vibe-kanban-docker providers status
@@ -163,6 +171,8 @@ cd /path/to/project
 # Clear all credentials
 ./vibe-kanban-docker providers reset
 ```
+
+> **Note:** Claude Code uses interactive OAuth by default (`claude login`). Pro/Max subscribers can alternatively use `claude setup-token` to generate a long-lived token, then store it via `providers env set CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-...`
 
 ### Environment Variables (API Keys)
 
