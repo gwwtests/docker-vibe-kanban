@@ -1,17 +1,63 @@
 # vibe-kanban-docker
 
-Sandboxed AI development environment for [vibe-kanban](https://github.com/BloopAI/vibe-kanban).
+> **Not a fork.** This is a convenience wrapper (scripts + Dockerfile) that runs the **original, unmodified** [vibe-kanban](https://github.com/BloopAI/vibe-kanban) inside Docker containers.
 
-Run AI coding agents safely in Docker containers with controlled access to your projects.
+## What This Is
 
-## Why?
+A set of scripts and Dockerfile that help you:
 
-vibe-kanban runs AI agents with powerful permissions (`--dangerously-skip-permissions`). This container provides:
+* **Launch vibe-kanban in isolated Docker containers** - point at a project directory, get a running vibe-kanban instance
+* **Manage AI tool credentials in Docker volumes** - login to Claude, GitHub CLI, etc. once; all containers share access
+* **Run multiple projects in parallel** - each in its own container on a separate port
+* **Jump into containers easily** - `./vibe-kanban-docker shell` for interactive work
 
-* **Security isolation** - AI agents can only access mounted directories
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  This repo provides          │  NOT provided (comes from       │
+│  ─────────────────           │  upstream vibe-kanban)          │
+│                              │  ───────────────────────────    │
+│  • Dockerfile                │  • vibe-kanban itself           │
+│  • vibe-kanban-docker script │  • AI agent functionality       │
+│  • Credential management     │  • Kanban board UI              │
+│  • Container orchestration   │  • All the actual features      │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+## Why Use This Instead of Running vibe-kanban Directly?
+
+| Running directly | Running via vibe-kanban-docker |
+|------------------|-------------------------------|
+| AI agents have full system access | AI agents isolated to mounted dirs only |
+| Credentials scattered across ~/.config | Credentials in Docker volume, shareable |
+| One project at a time (or manual port management) | Multiple projects, auto port allocation |
+| Need to install Node.js, Rust, tools | Everything pre-installed in container |
+| Rebuilding loses your auth sessions | Credentials persist in volume |
+
+### Credential Sharing - The Killer Feature
+
+Login to AI tools **once**, use in **all containers** (and your own Docker setups):
+
+```bash
+# Login once
+./vibe-kanban-docker providers login
+
+# Now ALL containers have access - no re-login needed:
+./vibe-kanban-docker --dir /project1 run --rw /project1
+./vibe-kanban-docker --dir /project2 run --rw /project2
+./vibe-kanban-docker --dir /project3 run --rw /project3
+
+# Use the same credentials in YOUR OWN containers:
+docker run -v vibe_kanban_providers:/home/user/.config/providers your-own-image
+```
+
+## Security Model
+
+vibe-kanban runs AI agents with powerful permissions (`--dangerously-skip-permissions`). This wrapper provides:
+
+* **Container isolation** - AI agents can only access explicitly mounted directories
 * **Read-only by default** - Explicit `--rw` flag required for write access
-* **Shared credentials** - Login once, all containers have access
-* **Persistent containers** - Resume work where you left off
+* **No mounts = no access** - Running without paths gives container-only filesystem
+* **Credentials isolated** - Stored in Docker volume, not scattered on host
 
 ## Quick Start
 
@@ -183,32 +229,38 @@ cp configs/vibe-kanban-docker_settings.example.yaml \
    ~/.config/vibe-kanban-docker/vibe-kanban-docker_settings.yaml
 ```
 
-## Security Model
+## Docker Volumes (Reusable in Your Own Containers!)
 
-* **Read-only by default** - Mounts are read-only unless `--rw` is specified
-* **No mounts by default** - Running without paths gives container-only filesystem
-* **Explicit write access** - Use `--rw` flag before each writable path
-* **Isolated credentials** - Stored in Docker volume, not on host filesystem
-* **Container isolation** - AI agents can only access mounted directories
-* **Survives reboots** - Containers use `--restart unless-stopped`
+Two volumes persist data and can be **mounted in any Docker container**:
 
-## Docker Volumes
+| Volume | Purpose | Mount Point |
+|--------|---------|-------------|
+| `vibe_kanban_providers` | AI tool credentials | `~/.config/providers` |
+| `vibe_kanban_dotclaude` | Claude Code config | `~/.claude` |
 
-Two volumes are used to persist data across containers:
+### Using Credentials in Your Own Containers
 
-| Volume | Purpose | Contents |
-|--------|---------|----------|
-| `vibe_kanban_providers` | Shared credentials | API keys, Claude/GitHub auth, env vars |
-| `vibe_kanban_dotclaude` | Claude Code config | Settings, MCP servers, session data |
-
-**Providers volume** - Login once, all containers share access:
+The credentials volume works with any Docker setup:
 
 ```bash
-./vibe-kanban-docker providers login    # Authenticates Claude & GitHub
-./vibe-kanban-docker providers env set OPENAI_API_KEY=sk-...  # Store API keys
+# Your own container gets Claude, GitHub CLI, API keys - no login needed:
+docker run -it \
+  -v vibe_kanban_providers:/home/youruser/.config/providers \
+  your-own-image
+
+# Inside that container, Claude Code and gh are already authenticated!
 ```
 
-**Dotclaude volume** - Share Claude Code configuration across containers (optional).
+**Volume contents:**
+
+```
+~/.config/providers/
+├── claude/          # Claude Code auth (symlinked to ~/.claude)
+├── gh/              # GitHub CLI auth (symlinked to ~/.config/gh)
+└── env/             # API keys (OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.)
+    ├── OPENAI_API_KEY
+    └── ANTHROPIC_API_KEY
+```
 
 Use `./vibe-kanban-docker status --explain` for detailed explanations of all resources.
 
