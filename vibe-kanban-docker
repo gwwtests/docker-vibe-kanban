@@ -511,23 +511,27 @@ Show container status for current directory (or all containers).
 Options:
   --all, -a       Show all tracked containers
   --verbose, -v   Show configuration details (env vars, defaults)
+  --explain, -e   Show explanations for each field
   --help, -h      Show this help message
 
 Examples:
   vibe-kanban-docker status              # Current directory's container
   vibe-kanban-docker status --all        # All tracked containers
   vibe-kanban-docker status -v           # Verbose with config details
+  vibe-kanban-docker status --explain    # With explanations
   vibe-kanban-docker --dir /path status  # Specific directory's container
 EOF
 }
 
 cmd_status() {
     local verbose=false
+    local explain=false
 
     # Parse options
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --verbose|-v) verbose=true; shift ;;
+            --explain|-e) explain=true; shift ;;
             --help|-h) cmd_status_help; return 0 ;;
             *) shift ;;
         esac
@@ -539,17 +543,22 @@ cmd_status() {
     local meta_file="$CONFIG_DIR/containers/${container_name}.yaml"
 
     echo "=== Container: $container_name ==="
+    [[ "$explain" == true ]] && echo "    ^ Derived from directory name using tmuxdir-style canonicalization (lowercase, special chars replaced)"
     echo ""
 
     # Basic info from metadata
     if [[ -f "$meta_file" ]]; then
         echo "Directory:  $(grep '^directory:' "$meta_file" | cut -d' ' -f2-)"
+        [[ "$explain" == true ]] && echo "    ^ Host directory this container was created for; used to resolve container name"
         echo "Image:      $(grep '^image:' "$meta_file" | cut -d' ' -f2-)"
+        [[ "$explain" == true ]] && echo "    ^ Docker image used; contains Arch Linux + Node.js + Rust + AI tools"
         echo "Port:       $(grep '^port:' "$meta_file" | cut -d' ' -f2-)"
+        [[ "$explain" == true ]] && echo "    ^ Allocated port for vibe-kanban web UI; starts at $DEFAULT_BASE_PORT, increments for each container"
         echo "Created:    $(grep '^created_at:' "$meta_file" | cut -d' ' -f2-)"
         echo ""
 
         echo "Mounts:"
+        [[ "$explain" == true ]] && echo "    ^ Host directories accessible inside container; (ro)=read-only, (rw)=read-write"
         local in_mounts=false
         local has_mounts=false
         while IFS= read -r line; do
@@ -581,6 +590,7 @@ cmd_status() {
     # Runtime status
     if container_running "$container_name"; then
         echo "Status:     RUNNING"
+        [[ "$explain" == true ]] && echo "    ^ Container is active; vibe-kanban server should be accessible"
         local uptime
         uptime=$(docker ps --filter "name=^${container_name}$" --format "{{.Status}}")
         echo "Uptime:     $uptime"
@@ -590,21 +600,26 @@ cmd_status() {
             local port
             port=$(cat "$port_file")
             echo "URL:        http://127.0.0.1:$port"
+            [[ "$explain" == true ]] && echo "    ^ Open this in browser to access vibe-kanban web UI; use 127.0.0.1 not localhost (IPv6 issues)"
         fi
     elif container_exists "$container_name"; then
         echo "Status:     STOPPED"
+        [[ "$explain" == true ]] && echo "    ^ Container exists but not running; use 'vibe-kanban-docker run' to start"
     else
         echo "Status:     NOT CREATED"
+        [[ "$explain" == true ]] && echo "    ^ No container for this directory; use 'vibe-kanban-docker run' to create"
     fi
 
     echo ""
 
     # Docker Resources section
     echo "--- Docker Resources ---"
+    [[ "$explain" == true ]] && echo "    ^ Shared resources used by all vibe-kanban-docker containers"
     echo ""
 
     # Image info
     echo "Image:"
+    [[ "$explain" == true ]] && echo "    ^ Docker image containing the development environment (Arch Linux + tools)"
     if docker image inspect "$DOCKER_IMAGE" &>/dev/null; then
         local image_size image_id
         image_size=$(docker image inspect "$DOCKER_IMAGE" --format '{{.Size}}' | numfmt --to=iec 2>/dev/null || echo "unknown")
@@ -618,6 +633,8 @@ cmd_status() {
 
     echo ""
     echo "Volumes:"
+    [[ "$explain" == true ]] && echo "    ^ Docker volumes persist data across container restarts; shared between containers"
+    echo ""
 
     # Providers volume
     if docker volume inspect "$PROVIDERS_VOL" &>/dev/null; then
@@ -627,15 +644,34 @@ cmd_status() {
     else
         echo "  providers:  $PROVIDERS_VOL (not created)"
     fi
+    if [[ "$explain" == true ]]; then
+        cat <<'EXPLAIN'
+      ^ Stores API keys and credentials for AI providers (Claude, GitHub CLI, etc.)
+        - Mounted at ~/.config/providers/ inside containers
+        - Login once with 'providers login', all containers share access
+        - Contains: claude/, gh/, env/ (environment variables)
+        - Safe to delete: credentials will need to be re-entered
+EXPLAIN
+    fi
 
     # Dotclaude volume
     local dotclaude_vol="vibe_kanban_dotclaude"
+    echo ""
     if docker volume inspect "$dotclaude_vol" &>/dev/null; then
         local vol_created
         vol_created=$(docker volume inspect "$dotclaude_vol" --format '{{.CreatedAt}}' 2>/dev/null | cut -dT -f1)
         echo "  dotclaude:  $dotclaude_vol (created: $vol_created)"
     else
         echo "  dotclaude:  $dotclaude_vol (not created)"
+    fi
+    if [[ "$explain" == true ]]; then
+        cat <<'EXPLAIN'
+      ^ Stores Claude Code configuration and session data (~/.claude directory)
+        - Contains: settings, MCP server configs, conversation history
+        - Can be shared across containers for consistent Claude Code experience
+        - Mount in other containers to share Claude Code configuration
+        - Safe to delete: Claude Code will recreate with defaults
+EXPLAIN
     fi
 
     # Verbose mode: show configuration
@@ -666,15 +702,18 @@ cmd_status() {
 
 cmd_status_all() {
     local verbose=false
+    local explain=false
 
     # Parse options
     for arg in "$@"; do
         case "$arg" in
             --verbose|-v) verbose=true ;;
+            --explain|-e) explain=true ;;
         esac
     done
 
     echo "=== All vibe-kanban-docker Containers ==="
+    [[ "$explain" == true ]] && echo "    ^ Each directory gets its own isolated container with unique port"
     echo ""
 
     ensure_config_dirs
@@ -685,6 +724,10 @@ cmd_status_all() {
 
     printf "%-25s %-10s %-7s %-35s %s\n" "CONTAINER" "STATUS" "PORT" "URL" "DIRECTORY"
     echo "--------------------------------------------------------------------------------------------------------------"
+    if [[ "$explain" == true ]]; then
+        echo "^ Name from dir  ^ runtime  ^ web UI  ^ browser access                    ^ host path"
+        echo ""
+    fi
 
     for meta_file in "$CONFIG_DIR/containers/"*.yaml; do
         [[ -f "$meta_file" ]] || continue
@@ -712,15 +755,18 @@ cmd_status_all() {
 
     if [[ $count -eq 0 ]]; then
         echo "(no containers tracked)"
+        [[ "$explain" == true ]] && echo "    ^ Create containers with: vibe-kanban-docker run --rw /path/to/project"
     fi
 
     echo ""
     echo "Total: $count containers ($running running, $stopped stopped)"
+    [[ "$explain" == true ]] && echo "    ^ Containers persist with --restart unless-stopped; survive host reboots"
 
-    # Verbose: show shared resources
-    if [[ "$verbose" == true ]]; then
+    # Verbose or explain: show shared resources
+    if [[ "$verbose" == true || "$explain" == true ]]; then
         echo ""
         echo "--- Shared Docker Resources ---"
+        [[ "$explain" == true ]] && echo "    ^ These resources are shared across ALL containers"
         echo ""
         echo "Volumes:"
         if docker volume inspect "$PROVIDERS_VOL" &>/dev/null; then
@@ -728,11 +774,17 @@ cmd_status_all() {
         else
             echo "  providers:  $PROVIDERS_VOL (not created)"
         fi
+        if [[ "$explain" == true ]]; then
+            echo "      ^ API keys & credentials; login once, all containers share"
+        fi
         local dotclaude_vol="vibe_kanban_dotclaude"
         if docker volume inspect "$dotclaude_vol" &>/dev/null; then
             echo "  dotclaude:  $dotclaude_vol (exists)"
         else
             echo "  dotclaude:  $dotclaude_vol (not created)"
+        fi
+        if [[ "$explain" == true ]]; then
+            echo "      ^ Claude Code ~/.claude config; share across containers for unified settings"
         fi
         echo ""
         echo "Image:"
@@ -743,6 +795,7 @@ cmd_status_all() {
         else
             echo "  $DOCKER_IMAGE (not built)"
         fi
+        [[ "$explain" == true ]] && echo "      ^ Arch Linux + Node.js + Rust + AI tools; rebuild with: vibe-kanban-docker build"
     fi
 }
 

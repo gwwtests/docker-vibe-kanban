@@ -189,6 +189,28 @@ cp configs/vibe-kanban-docker_settings.example.yaml \
 * **No mounts by default** - Running without paths gives container-only filesystem
 * **Explicit write access** - Use `--rw` flag before each writable path
 * **Isolated credentials** - Stored in Docker volume, not on host filesystem
+* **Container isolation** - AI agents can only access mounted directories
+* **Survives reboots** - Containers use `--restart unless-stopped`
+
+## Docker Volumes
+
+Two volumes are used to persist data across containers:
+
+| Volume | Purpose | Contents |
+|--------|---------|----------|
+| `vibe_kanban_providers` | Shared credentials | API keys, Claude/GitHub auth, env vars |
+| `vibe_kanban_dotclaude` | Claude Code config | Settings, MCP servers, session data |
+
+**Providers volume** - Login once, all containers share access:
+
+```bash
+./vibe-kanban-docker providers login    # Authenticates Claude & GitHub
+./vibe-kanban-docker providers env set OPENAI_API_KEY=sk-...  # Store API keys
+```
+
+**Dotclaude volume** - Share Claude Code configuration across containers (optional).
+
+Use `./vibe-kanban-docker status --explain` for detailed explanations of all resources.
 
 ## File Locations
 
@@ -234,6 +256,20 @@ Changes to documentation don't invalidate the build cache.
 ### Contributing
 
 See [FUTURE_WORK.md](FUTURE_WORK.md) for planned features.
+
+## Documentation
+
+* [FAQ](docs/FAQ.md) - Frequently asked questions with detailed explanations
+* [CHEATSHEET.md](CHEATSHEET.md) - Quick reference for common commands
+* [FUTURE_WORK.md](FUTURE_WORK.md) - Planned features and improvements
+
+**Self-documenting commands:**
+
+```bash
+./vibe-kanban-docker status --explain    # Explains each status field
+./vibe-kanban-docker status --verbose    # Shows all configuration
+./vibe-kanban-docker help                # Command reference
+```
 
 ## License
 
