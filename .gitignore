@@ -23,7 +23,8 @@ vibe-kanban-docker_settings.yaml
 # Temporary/development files
 tmp/
 
-# Privacy audit reports (may contain PII findings)
+# Local privacy audit working files (may contain PII findings)
+# Note: docs/PRIVACY_AUDIT.md IS tracked (clean summary)
 privacy-audit-*.md
 
 # Temporary files
