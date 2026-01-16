@@ -99,22 +99,28 @@ This builds an Arch Linux container with all tools pre-installed. See [Container
 
 ## Container Contents
 
-**Base: Arch Linux** (not Alpine) — full glibc compatibility, AUR access via yay
+**Base: Arch Linux** (not Alpine) — full glibc compatibility, bleeding-edge packages
 
 | Category | Tools |
 |----------|-------|
+| **Package Managers** | pacman (official repos), yay (AUR) — install anything you need |
 | **Editors** | vim, neovim |
-| **Languages** | Node.js 18+, pnpm, Rust (stable), Python 3 |
-| **AI Tools** | Claude Code, GitHub CLI |
+| **Languages** | Node.js 18+, pnpm, Rust (stable), Python 3, ipython, Go, Lua |
+| **AI Tools** | Claude Code (claude), GitHub CLI (gh) |
 | **Rust Dev** | cargo-watch, sqlx-cli, clippy, rustfmt |
-| **Terminal** | tmux, screen, htop, mc, less, tree |
-| **Search/Find** | ripgrep (rg), fd, fzf, bat |
-| **Git** | git, tig |
-| **Network** | curl, wget, aria2, openssh |
-| **Diagnostics** | procps-ng (ps, top), iproute2 (ip, ss), net-tools (netstat), bind (dig) |
-| **Data** | jq |
+| **Terminal Workspace** | tmux, screen, zellij |
+| **File Managers** | mc, yazi |
+| **Fuzzy Finders** | sk (skim), fzf |
+| **Git** | git, tig, lazygit |
+| **Search/View** | rg (ripgrep), fd, bat, viu (images) |
+| **Debuggers** | gdb, cgdb |
+| **Database** | sqlite3 |
+| **Documents** | pandoc |
+| **Network** | curl, wget, aria2, openssh, socat, websocat |
+| **Diagnostics** | htop, ps/top (procps-ng), ip/ss (iproute2), netstat (net-tools), dig (bind) |
+| **Utilities** | jq, b3sum, less, tree, make |
 
-All tools available to AI agents running inside the container
+**Why Arch?** One of the best distros for development — official repos have most tools you need via `pacman`, and if something's missing, the AUR community packages via `yay` have it. The container is set up with proper user permissions so AI agents (vibe-kanban) can install additional packages as needed
 
 ## Usage
 

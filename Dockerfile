@@ -115,32 +115,48 @@ RUN git clone https://aur.archlinux.org/yay.git && \
 # ============================================
 # Layer 5: Core System Tools (very stable)
 # ============================================
+# Arch Linux value: rich official packages via pacman,
+# plus AUR community packages via yay (installed in Layer 4)
 USER root
 RUN pacman -S --needed --noconfirm \
     vim \
     neovim \
     git \
     tig \
+    lazygit \
     tmux \
     screen \
+    zellij \
     wget \
     curl \
     aria2 \
+    socat \
+    websocat \
     htop \
     mc \
+    yazi \
     jq \
     ripgrep \
     fd \
     bat \
+    skim \
     fzf \
     openssh \
     ca-certificates \
     less \
     tree \
+    viu \
     procps-ng \
     iproute2 \
     net-tools \
-    bind
+    bind \
+    lua \
+    ipython \
+    sqlite \
+    gdb \
+    cgdb \
+    pandoc-cli \
+    b3sum
 
 # ============================================
 # Layer 6: Node.js & pnpm (stable)
