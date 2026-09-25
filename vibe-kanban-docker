@@ -28,6 +28,12 @@ DOTCLAUDE_VOL="${VIBE_KANBAN_DOTCLAUDE_VOL:-vibe_kanban_dotclaude}"
 # - Common dev ports (8080, 5173, etc.)
 DEFAULT_BASE_PORT="${VIBE_KANBAN_DOCKER_BASE_PORT:-15173}"
 
+# Host address the port is published on. Loopback by default: vibe-kanban has
+# no authentication, and Docker-published ports bypass host firewalls (ufw),
+# so a 0.0.0.0 publish exposes it to the whole LAN/tailnet. Reach it remotely
+# with an SSH tunnel: ssh -L PORT:127.0.0.1:PORT host
+BIND_ADDR="${VIBE_KANBAN_DOCKER_BIND_ADDR:-127.0.0.1}"
+
 # Providers env directory inside container
 PROVIDERS_ENV_DIR="/home/devuser/.config/providers/env"
 
@@ -294,6 +300,7 @@ Environment Variables:
   VIBE_KANBAN_DOTCLAUDE_VOL         Claude config volume (default: vibe_kanban_dotclaude)
   VIBE_KANBAN_CONFIG_DIR            Config directory (default: ~/.config/vibe-kanban-docker)
   VIBE_KANBAN_DOCKER_BASE_PORT      Starting port (default: 15173)
+  VIBE_KANBAN_DOCKER_BIND_ADDR      Host address to publish on (default: 127.0.0.1)
 EOF
 }
 
@@ -404,7 +411,7 @@ cmd_run() {
         -e PORT="$port" \
         -e HOST="0.0.0.0" \
         -e WORKSPACE_DIR="$workspace_dir" \
-        -p "${port}:${port}" \
+        -p "${BIND_ADDR}:${port}:${port}" \
         -v "${PROVIDERS_VOL}:/home/devuser/.config/providers" \
         "${mount_args[@]}" \
         "$DOCKER_IMAGE" \
@@ -685,6 +692,7 @@ EXPLAIN
         printf "  %-35s = %s\n" "VIBE_KANBAN_PROVIDERS_VOL" "${VIBE_KANBAN_PROVIDERS_VOL:-<unset, default: vibe_kanban_providers>}"
         printf "  %-35s = %s\n" "VIBE_KANBAN_CONFIG_DIR" "${VIBE_KANBAN_CONFIG_DIR:-<unset, default: ~/.config/vibe-kanban-docker>}"
         printf "  %-35s = %s\n" "VIBE_KANBAN_DOCKER_BASE_PORT" "${VIBE_KANBAN_DOCKER_BASE_PORT:-<unset, default: 15173>}"
+        printf "  %-35s = %s\n" "VIBE_KANBAN_DOCKER_BIND_ADDR" "${VIBE_KANBAN_DOCKER_BIND_ADDR:-<unset, default: 127.0.0.1>}"
         echo ""
         echo "Effective Values:"
         echo "  Image:           $DOCKER_IMAGE"
