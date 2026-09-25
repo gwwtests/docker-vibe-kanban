@@ -78,6 +78,10 @@ Override the base port with `VIBE_KANBAN_DOCKER_BASE_PORT`:
 VIBE_KANBAN_DOCKER_BASE_PORT=20000 ./vibe-kanban-docker run --rw /path
 ```
 
+### Can I reach it from another machine?
+
+Ports are published on `127.0.0.1` only, because vibe-kanban has no authentication. Use an SSH tunnel: `ssh -N -L 15173:127.0.0.1:15173 <host>`. See [REMOTE_ACCESS.md](REMOTE_ACCESS.md) for the other options and the shared-host caveat.
+
 ### Why port 15173?
 
 It's unlikely to conflict with:
@@ -241,6 +245,7 @@ vim ~/.config/vibe-kanban-docker/vibe-kanban-docker_settings.yaml
 | `VIBE_KANBAN_PROVIDERS_VOL` | `vibe_kanban_providers` | Credentials volume name |
 | `VIBE_KANBAN_CONFIG_DIR` | `~/.config/vibe-kanban-docker` | Config directory |
 | `VIBE_KANBAN_DOCKER_BASE_PORT` | `15173` | Starting port number |
+| `VIBE_KANBAN_DOCKER_BIND_ADDR` | `127.0.0.1` | Host address the port is published on |
 
 Use `./vibe-kanban-docker status --verbose` to see current values.
 

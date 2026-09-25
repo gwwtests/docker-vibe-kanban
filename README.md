@@ -58,6 +58,7 @@ vibe-kanban runs AI agents with powerful permissions (`--dangerously-skip-permis
 * **Read-only by default** - Explicit `--rw` flag required for write access
 * **No mounts = no access** - Running without paths gives container-only filesystem
 * **Credentials isolated** - Stored in Docker volume, not scattered on host
+* **Loopback-only web UI** - Published on `127.0.0.1` by default; use an SSH tunnel for remote access (see [docs/REMOTE_ACCESS.md](docs/REMOTE_ACCESS.md))
 
 ## Quick Start
 
@@ -247,6 +248,7 @@ Each container gets a unique port starting at 15173 (to avoid conflicts with loc
 | `VIBE_KANBAN_PROVIDERS_VOL` | `vibe_kanban_providers` | Credentials volume |
 | `VIBE_KANBAN_CONFIG_DIR` | `~/.config/vibe-kanban-docker` | Config directory |
 | `VIBE_KANBAN_DOCKER_BASE_PORT` | `15173` | Starting port |
+| `VIBE_KANBAN_DOCKER_BIND_ADDR` | `127.0.0.1` | Host address the port is published on |
 
 ### Settings File
 
@@ -341,6 +343,7 @@ See [FUTURE_WORK.md](FUTURE_WORK.md) for planned features.
 ## Documentation
 
 * [FAQ](docs/FAQ.md) - Frequently asked questions with detailed explanations
+* [REMOTE_ACCESS](docs/REMOTE_ACCESS.md) - Using it from another machine safely (SSH tunnel, access options, shared hosts)
 * [CHEATSHEET.md](CHEATSHEET.md) - Quick reference for common commands
 * [FUTURE_WORK.md](FUTURE_WORK.md) - Planned features and improvements
 
